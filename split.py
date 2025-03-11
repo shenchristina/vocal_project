@@ -67,6 +67,8 @@ class DragDropWindow(QWidget):
         # Execute Demucs with the constructed arguments 
         demucs.separate.main(shlex.split(args))
 
+        self.close()
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = DragDropWindow()
