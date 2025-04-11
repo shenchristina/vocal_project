@@ -8,17 +8,57 @@ import sys
 import shlex
 import demucs.separate #library used for source seperation
 import os
-
+import whisper 
+import pyfiglet 
 from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout, QPushButton, QFileDialog
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent
 from PyQt6.QtCore import Qt
 
-
-#GET READY 
+# GLOBAL SETUP 
 print("GETTING SET UP!")
 print("HOLD TIGHT :)")
+hop_size = 512
+loudness_threshold = 7.0e-5  # Used to filter out silence
+
+# UTILITY FUNCTIONS 
+def frequency_to_note(frequency):
+        note_names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+        if frequency <= 0:
+            return "N/A"
+        midi_note = round(69 + 12 * np.log2(frequency / 440.0))
+        note_index = midi_note % 12
+        octave = (midi_note // 12) - 1
+        return f"{note_names[note_index]}{octave}"
+
+def calculate_accuracy(original_freq, live_freq):
+    if original_freq > 0 and live_freq > 0:
+        return max(0, 100 - (abs(original_freq - live_freq) / original_freq * 100))
+    return 0
+
+def print_text(text, accuracy):
+
+    if accuracy != -1: 
+        if accuracy > 90.0: 
+            feedback = "Excellent!!!"
+            large_text = pyfiglet.figlet_format(f"{str(int(accuracy))}%")
+            print(f"\033[30;32m{large_text} \n {feedback} \033[0m") 
+        elif accuracy > 75.0 and accuracy < 90.0:
+            feedback = "good job"
+            large_text = pyfiglet.figlet_format(f"{str(int(accuracy))}%")
+            print(f"\033[30;33m{large_text} \n {feedback} \033[0m") 
+        elif accuracy > 50 and accuracy < 75.0:
+            feedback = "not very good :/"
+            large_text = pyfiglet.figlet_format(f"{str(int(accuracy))}%")
+            print(f"\033[30;35m{large_text} \n {feedback} \033[0m") 
+        else: 
+            feedback = "You Suck!"
+            large_text = pyfiglet.figlet_format(f"{str(int(accuracy))}%")
+            print(f"\033[30;31m{large_text} \n {feedback} \033[0m") 
+
+        print(f"\033[1;37;90m{text}\033[0m")
 
 
+#CLASS -- SOURCE SEPERATION 
 class DragDropWindow(QWidget):
     def __init__(self):
         '''initializes drag and drop window (label and button)'''
@@ -88,91 +128,119 @@ class DragDropWindow(QWidget):
         os.rmdir(demucs_output_dir)
         self.close()
 
+#WHISPER--LYRIC GENERATION 
+def generate_lyrics_with_whisper(vocal_path="vocals.mp3"):
+        print("Transcribing vocals with Whisper... this may take a moment.")
+
+        model = whisper.load_model("base")  # You can use "small", "medium", or "large" for better accuracy
+        result = model.transcribe(vocal_path)
+        lyrics = result["segments"]  # List of dicts: start, end, text
+
+        return lyrics
+
+#AUDIO PROCESSING
+def start_audio_processing(f0, rms_values, lyrics, samplerate, backing_track):
+    current_frame = 0
+    current_lyric_index = 0
+    text_2 = ""
+    pitch_detector = aubio.pitch("yin", 1024, hop_size, samplerate)
+    pitch_detector.set_unit("Hz")
+    pitch_detector.set_tolerance(0.8)
+    accuracy_list =[]
+    prev_accuracy = 0.0
+
+    def callback(indata, frames, time, status):
+        nonlocal current_frame, current_lyric_index,text_2, accuracy_list, prev_accuracy
+        
+        if status: print(status)
+
+        # Process live mic input
+        mono_audio = np.mean(indata, axis=1)
+        mono_audio = mono_audio[:hop_size] if len(mono_audio) >= hop_size else np.pad(mono_audio, (0, hop_size - len(mono_audio)))
+        live_pitch = pitch_detector(mono_audio)[0]
+        confidence = pitch_detector.get_confidence()
+
+        # Get corresponding pitch from original vocals
+        original_pitch = f0[current_frame] if current_frame < len(f0) else 0
+        original_loudness = rms_values[current_frame] if current_frame < len(rms_values) else 0
+        current_time = current_frame * hop_size / samplerate
+        current_frame += 1
+
+        text = ""
+        if current_lyric_index < len(lyrics):
+            start = lyrics[current_lyric_index]['start']
+            end = lyrics[current_lyric_index]['end']
+            text = lyrics[current_lyric_index]['text']     
+            if current_time > end:
+                    current_lyric_index += 1
+
+        # Only display if confidence is high
+        if 50 <= live_pitch <= 600 and confidence > 0.8:
+            live_note = frequency_to_note(live_pitch)
+            original_note = frequency_to_note(original_pitch)
+            accuracy = calculate_accuracy(original_pitch, live_pitch)
+            
+            if accuracy != prev_accuracy:
+                accuracy_list.append(accuracy)
+                prev_accuracy = accuracy
+
+            print_text(text,accuracy)       
+        else:
+            if text != text_2:
+                accuracy =-1
+                print_text(text,accuracy)
+                text_2 = text 
+
+    with sd.InputStream(callback=lambda indata, frames, time_info, status:
+                    callback(indata, frames, time_info, status),
+                    samplerate=samplerate, channels=1, blocksize=hop_size):
+        sd.play(backing_track, samplerate)
+        try:
+            while sd.get_stream().active:
+                time.sleep(0.01)
+        except KeyboardInterrupt:
+            average = sum(accuracy_list) / len(accuracy_list)
+            end_game = pyfiglet.figlet_format(f"GAME   ENDED")
+            game_acr = pyfiglet.figlet_format(f"Your Accuracy was:") 
+            avg_txt = pyfiglet.figlet_format(f"{int(average)}%") 
+            print(end_game)
+            print(game_acr)
+            print(avg_txt)
+    
+#MAIN FLOW 
+
 if __name__ == "__main__":
+    app = QApplication(sys.argv)
     answer = input("Do you want to sing a new song? (yes/no): ").strip().lower()
 
     if answer == "yes":
-        app = QApplication(sys.argv)
         window = DragDropWindow()
         window.show()
         app.exec()  # Blocks execution until the window is closed
-
-
-# Load original vocal track and extract pitch
-original_audio_path = "vocals.mp3" 
-y, sr = librosa.load(original_audio_path, sr=None)  # Load file at native sample rate
-hop_size = 512
-
-# Extract pitch from original vocals
-f0, voiced_flag, _ = librosa.pyin(y, fmin=50, fmax=600, sr=sr, hop_length=hop_size)
-f0 = np.nan_to_num(f0)  #Replace NaN with 0 for unvoiced parts
-
-# Set up microphone input for live vocal processing
-device_info = sd.query_devices(kind="input")
-samplerate = int(device_info["default_samplerate"])
-
-pitch_detector = aubio.pitch("yin", 1024, hop_size, samplerate)
-pitch_detector.set_unit("Hz")
-pitch_detector.set_tolerance(0.8)
-
-# Prepare audio playback (backing track)
-backing_track_path = "no_vocals.mp3"
-backing_track, _ = librosa.load(backing_track_path, sr=samplerate)  # Match mic input sample rate
-
-# Function to convert frequency to note
-def frequency_to_note(frequency):
-    note_names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-    if frequency <= 0:
-        return "N/A"
-    midi_note = round(69 + 12 * np.log2(frequency / 440.0))
-    note_index = midi_note % 12
-    octave = (midi_note // 12) - 1
-    return f"{note_names[note_index]}{octave}"
-
-# Function to calculate accuracy
-def calculate_accuracy(original_freq, live_freq):
-    if original_freq > 0 and live_freq > 0:
-        return max(0, 100 - (abs(original_freq - live_freq) / original_freq * 100))
-    return 0
-
-# Start processing live audio
-def callback(indata, frames, time, status):
-    global live_pitch_values, original_pitch_values, current_frame
-    if status:
-        print(status)
-
-    # Process live mic input
-    mono_audio = np.mean(indata, axis=1)
-    mono_audio = mono_audio[:hop_size] if len(mono_audio) >= hop_size else np.pad(mono_audio, (0, hop_size - len(mono_audio)))
-    live_pitch = pitch_detector(mono_audio)[0]
-    confidence = pitch_detector.get_confidence()
-
-    # Get corresponding pitch from original vocals
-    if current_frame < len(f0):
-        original_pitch = f0[current_frame]
-        current_frame += 1
     else:
-        original_pitch = 0  # Out of range
+        # Check if both files exist
+        if not os.path.exists("vocals.mp3") or not os.path.exists("no_vocals.mp3"):
+            input("No previous song found. Press ENTER to add a song.")
+            window = DragDropWindow()
+            window.show()
+            app.exec()
 
-    # Only display if confidence is high
-    if 50 <= live_pitch <= 600 and confidence > 0.8:
-        live_note = frequency_to_note(live_pitch)
-        original_note = frequency_to_note(original_pitch)
-        accuracy = calculate_accuracy(original_pitch, live_pitch)
+    print(" LOADING YOUR SONG ")
+    y, sr = librosa.load("vocals.mp3" , sr=None)  # Load file at native sample rate
+    backing, _ = librosa.load("no_vocals.mp3", sr=None)  # Load file at native sample rate
+    f0 = librosa.yin(y, fmin=50, fmax=600, sr=sr, hop_length=hop_size) # Extract pitch from original vocals
+    f0 = np.nan_to_num(f0)  # Replace NaN with 0 for unvoiced parts
+    rms = librosa.feature.rms(y=y, frame_length=hop_size)[0]
 
-        print(f"Original Vocal: {original_pitch:.2f} Hz ({original_note}) | Live Vocal: {live_pitch:.2f} Hz ({live_note}) | Accuracy: {accuracy:.1f}%")
+    # Set up microphone input for live vocal processing
+    device_info = sd.query_devices(kind="input")
+    samplerate = int(device_info["default_samplerate"])
+    pitch_detector = aubio.pitch("yin", 1024, hop_size, samplerate)
+    pitch_detector.set_unit("Hz")
+    pitch_detector.set_tolerance(0.8)
 
-# Wait for Enter key to start
-input("Press ENTER to start karaoke ! ! ! ! !")
-
-# Start playback and recording in sync
-current_frame = 0  # Frame tracker for original vocals
-with sd.InputStream(callback=callback, samplerate=samplerate, channels=1, blocksize=hop_size):
-    print("Start singing... (Press Ctrl+C to stop)")
-    sd.play(backing_track, samplerate)  # Play backing track
-
-    try:
-        while sd.get_stream().active:
-            time.sleep(0.01)  # Avoid CPU overload
-    except KeyboardInterrupt:
-        print("Karaoke session ended.")
+    lyrics = generate_lyrics_with_whisper("vocals.mp3")
+    
+    
+    input("Press ENTER to start karaoke ! ! ! ! !")
+    
