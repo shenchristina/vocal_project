@@ -22,21 +22,23 @@ loudness_threshold = 7.0e-5  # Used to filter out silence
 
 # UTILITY FUNCTIONS 
 def frequency_to_note(frequency):
-        note_names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-        if frequency <= 0:
-            return "N/A"
-        midi_note = round(69 + 12 * np.log2(frequency / 440.0))
-        note_index = midi_note % 12
-        octave = (midi_note // 12) - 1
-        return f"{note_names[note_index]}{octave}"
+    ''' Converts frequency to Notes and octave - EX: A4'''
+    note_names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+    if frequency <= 0:
+        return "N/A"
+    midi_note = round(69 + 12 * np.log2(frequency / 440.0))
+    note_index = midi_note % 12
+    octave = (midi_note // 12) - 1
+    return f"{note_names[note_index]}{octave}"
 
 def calculate_accuracy(original_freq, live_freq):
+    '''Calculates the acurracy in pitch between two vocals'''
     if original_freq > 0 and live_freq > 0:
         return max(0, 100 - (abs(original_freq - live_freq) / original_freq * 100))
     return 0
 
 def print_text(text, accuracy):
-
+    '''Formats and outputs '''
     if accuracy != -1: 
         if accuracy > 90.0: 
             feedback = "Excellent!!!"
@@ -130,16 +132,18 @@ class DragDropWindow(QWidget):
 
 #WHISPER--LYRIC GENERATION 
 def generate_lyrics_with_whisper(vocal_path="vocals.mp3"):
-        print("Transcribing vocals with Whisper... this may take a moment.")
+    '''Transcribes the lyrics from the original Vocals'''       
+    print("Transcribing vocals with Whisper... this may take a moment.")
 
-        model = whisper.load_model("base")  # You can use "small", "medium", or "large" for better accuracy
-        result = model.transcribe(vocal_path)
-        lyrics = result["segments"]  # List of dicts: start, end, text
+    model = whisper.load_model("base")  # You can use "small", "medium", or "large" for better accuracy
+    result = model.transcribe(vocal_path)
+    lyrics = result["segments"]  # List of dicts: start, end, text
 
-        return lyrics
+    return lyrics
 
 #AUDIO PROCESSING
 def start_audio_processing(f0, rms_values, lyrics, samplerate, backing_track):
+    '''Initializes all things needed for the callback function'''
     current_frame = 0
     current_lyric_index = 0
     text_2 = ""
@@ -150,6 +154,7 @@ def start_audio_processing(f0, rms_values, lyrics, samplerate, backing_track):
     prev_accuracy = 0.0
 
     def callback(indata, frames, time, status):
+        '''Listens for audio input and calls all print and comparsion functions'''
         nonlocal current_frame, current_lyric_index,text_2, accuracy_list, prev_accuracy
         
         if status: print(status)
@@ -208,12 +213,13 @@ def start_audio_processing(f0, rms_values, lyrics, samplerate, backing_track):
             print(avg_txt)
     
 #MAIN FLOW 
-
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
+    
+    app = QApplication(sys.argv) #Initializes application window for the drag and drop function 
     answer = input("Do you want to sing a new song? (yes/no): ").strip().lower()
-
-    if answer == "yes":
+    
+    #If yes open drag and drop for users... If no continue unless there are no files then drag and drop will open 
+    if answer == "yes": 
         window = DragDropWindow()
         window.show()
         app.exec()  # Blocks execution until the window is closed
@@ -226,6 +232,8 @@ if __name__ == "__main__":
             app.exec()
 
     print(" LOADING YOUR SONG ")
+
+    #started getting set up for vocal processing 
     y, sr = librosa.load("vocals.mp3" , sr=None)  # Load file at native sample rate
     backing, _ = librosa.load("no_vocals.mp3", sr=None)  # Load file at native sample rate
     f0 = librosa.yin(y, fmin=50, fmax=600, sr=sr, hop_length=hop_size) # Extract pitch from original vocals
@@ -241,6 +249,7 @@ if __name__ == "__main__":
 
     lyrics = generate_lyrics_with_whisper("vocals.mp3")
     
-    
     input("Press ENTER to start karaoke ! ! ! ! !")
+    
+    start_audio_processing(f0, rms, lyrics, sr, backing)
     
